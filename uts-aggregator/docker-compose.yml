@@ -1,0 +1,25 @@
+version: "3.9"
+services:
+  aggregator:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - dedup_data:/app/data
+    networks:
+      - internal
+
+  publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile.publisher
+    depends_on:
+      - aggregator
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  dedup_data:
