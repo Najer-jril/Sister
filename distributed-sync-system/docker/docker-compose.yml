@@ -1,0 +1,268 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - distributed_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  lock1:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.lock
+    command: ["--node-id", "lock1", "--port", "8001", "--peers", "lock2:8002,lock3:8003"]
+    environment:
+      - NODE_ID=lock1
+      - NODE_PORT=8001
+      - METRICS_PORT=9091
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8001:8001"
+      - "9091:9091"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  lock2:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.lock
+    command: ["--node-id", "lock2", "--port", "8002", "--peers", "lock1:8001,lock3:8003"]
+    environment:
+      - NODE_ID=lock2
+      - NODE_PORT=8002
+      - METRICS_PORT=9092
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8002:8002"
+      - "9092:9092"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  lock3:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.lock
+    command: ["--node-id", "lock3", "--port", "8003", "--peers", "lock1:8001,lock2:8002"]
+    environment:
+      - NODE_ID=lock3
+      - NODE_PORT=8003
+      - METRICS_PORT=9093
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8003:8003"
+      - "9093:9093"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  queue1:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.queue
+    command: ["--node-id", "queue1", "--port", "8091", "--peers", "queue2:8092,queue3:8093"]
+    environment:
+      - NODE_ID=queue1
+      - NODE_PORT=8091
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8091:8091"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  queue2:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.queue
+    command: ["--node-id", "queue2", "--port", "8092", "--peers", "queue1:8091,queue3:8093"]
+    environment:
+      - NODE_ID=queue2
+      - NODE_PORT=8092
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8092:8092"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  queue3:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.queue
+    command: ["--node-id", "queue3", "--port", "8093", "--peers", "queue1:8091,queue2:8092"]
+    environment:
+      - NODE_ID=queue3
+      - NODE_PORT=8093
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8093:8093"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8093/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  cache1:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cache
+    command: ["--node-id", "cache1", "--port", "8101", "--peers", "cache2:8102,cache3:8103"]
+    environment:
+      - NODE_ID=cache1
+      - NODE_PORT=8101
+      - DIRECTORY_URL=http://cache1:8101
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8101:8101"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8101/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  cache2:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cache
+    command: ["--node-id", "cache2", "--port", "8102", "--peers", "cache1:8101,cache3:8103"]
+    environment:
+      - NODE_ID=cache2
+      - NODE_PORT=8102
+      - DIRECTORY_URL=http://cache1:8101
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8102:8102"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8102/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  cache3:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cache
+    command: ["--node-id", "cache3", "--port", "8103", "--peers", "cache1:8101,cache2:8102"]
+    environment:
+      - NODE_ID=cache3
+      - NODE_PORT=8103
+      - DIRECTORY_URL=http://cache1:8101
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8103:8103"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8103/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - distributed_net
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - distributed_net
+    depends_on:
+      - lock1
+      - queue1
+      - cache1
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    networks:
+      - distributed_net
+    depends_on:
+      - prometheus
+
+volumes:
+  redis_data:
+
+networks:
+  distributed_net:
+    driver: bridge

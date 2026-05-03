@@ -1,0 +1,151 @@
+openapi: 3.0.0
+info:
+  title: Distributed Sync System API
+  version: 1.0.0
+  description: Endpoints for the Distributed Sync System covering Raft, Locks, Queues, and Caches.
+paths:
+  /health:
+    get:
+      summary: Node health check
+      responses:
+        '200':
+          description: OK
+  /locks/acquire:
+    post:
+      summary: Acquire a lock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resource_id: {type: string}
+                holder_id: {type: string}
+                lock_type: {type: string, enum: [SHARED, EXCLUSIVE]}
+                timeout: {type: number}
+      responses:
+        '200':
+          description: Lock acquired
+        '409':
+          description: Conflict (already locked)
+        '503':
+          description: Not leader
+  /locks/{lock_id}:
+    delete:
+      summary: Release a lock
+      parameters:
+        - name: lock_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: holder_id
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Released}
+        '400': {description: Unauthorized or missing holder}
+  /locks/{resource_id}/status:
+    get:
+      summary: Get lock status
+      parameters:
+        - name: resource_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Current lock state}
+  /locks/deadlocks:
+    get:
+      summary: List deadlocks
+      responses:
+        '200': {description: Array of waiters to holders}
+  /queues/{queue_name}/messages:
+    post:
+      summary: Produce a message
+      parameters:
+        - name: queue_name
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload: {type: object}
+                priority: {type: integer}
+      responses:
+        '201': {description: Message ID created}
+  /queues/{queue_name}/messages/next:
+    get:
+      summary: Consume next message
+      parameters:
+        - name: queue_name
+          in: path
+          required: true
+          schema: {type: string}
+        - name: consumer_id
+          in: query
+          schema: {type: string}
+      responses:
+        '200': {description: Message payload}
+        '204': {description: No messages}
+  /queues/messages/{message_id}/ack:
+    post:
+      summary: Acknowledge message delivery
+      parameters:
+        - name: message_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: ACK recorded}
+  /queues/{queue_name}/stats:
+    get:
+      summary: Get queue load stats
+      parameters:
+        - name: queue_name
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Queue metrics}
+  /cache/{key}:
+    get:
+      summary: Read from cache
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Value provided}
+        '404': {description: Cache miss}
+    put:
+      summary: Write to cache
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value: {type: string}
+      responses:
+        '200': {description: Cache populated}
+    delete:
+      summary: Invalidate a cache key
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Invalidated across cluster}

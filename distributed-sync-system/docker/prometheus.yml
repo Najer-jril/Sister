@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'lock_nodes'
+    static_configs:
+      - targets: ['lock1:9091', 'lock2:9092', 'lock3:9093']
+
+  - job_name: 'queue_nodes'
+    static_configs:
+      - targets: ['queue1:8091', 'queue2:8092', 'queue3:8093']
+
+  - job_name: 'cache_nodes'
+    static_configs:
+      - targets: ['cache1:8101', 'cache2:8102', 'cache3:8103']
