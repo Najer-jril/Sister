@@ -1,35 +1,35 @@
 // Lock Manager
 # Acquire exclusive lock (client-A)
-curl -X POST http://localhost:8003/locks/acquire \
+curl -X POST http://localhost:8001/locks/acquire \
   -H "Content-Type: application/json" \
   -d '{"resource_id":"database","lock_type":"EXCLUSIVE","holder_id":"client-A","timeout":30}'
 
 # Simpan lock_id dari response di atas
 
 # Check lock status
-curl http://localhost:8003/locks/database/status
+curl http://localhost:8001/locks/database/status
 
 # Try acquire same resource (client-B)
-curl -X POST http://localhost:8003/locks/acquire \
+curl -X POST http://localhost:8001/locks/acquire \
   -H "Content-Type: application/json" \
   -d '{"resource_id":"database","lock_type":"EXCLUSIVE","holder_id":"client-B","timeout":30}'
 
 # Try acquire dari non-leader (port 8002) — harus 503
-curl -X POST http://localhost:8001/locks/acquire \
+curl -X POST http://localhost:8003/locks/acquire \
   -H "Content-Type: application/json" \
   -d '{"resource_id":"test","lock_type":"EXCLUSIVE","holder_id":"client-C","timeout":30}'
 
 # Shared lock pada resource berbeda — harus sukses
-curl -X POST http://localhost:8003/locks/acquire \
+curl -X POST http://localhost:8001/locks/acquire \
   -H "Content-Type: application/json" \
   -d '{"resource_id":"config","lock_type":"SHARED","holder_id":"client-A","timeout":30}'
 
-curl -X POST http://localhost:8003/locks/acquire \
+curl -X POST http://localhost:8001/locks/acquire \
   -H "Content-Type: application/json" \
   -d '{"resource_id":"config","lock_type":"SHARED","holder_id":"client-B","timeout":30}'
 
 # Check deadlocks
-curl http://localhost:8003/locks/deadlocks
+curl http://localhost:8001/locks/deadlocks
 
 // Queue System
 # Produce message 1
@@ -49,7 +49,7 @@ curl http://localhost:8091/queues/orders/stats
 curl "http://localhost:8091/queues/orders/messages/next?consumer_id=worker-1&timeout=5"
 
 # Acknowledge (ganti {MESSAGE_ID} dengan message_id dari response consume)
-curl -X POST http://localhost:8091/queues/messages/{ec63f09e-78a3-467b-b880-ba556d7533ac}/ack \
+curl -X POST http://localhost:8091/queues/messages/28950866-b1e6-4d89-8f46-7cc928f8ab16/ack \
   -H "Content-Type: application/json" \
   -d '{"consumer_id":"worker-1"}'
 
@@ -57,7 +57,7 @@ curl -X POST http://localhost:8091/queues/messages/{ec63f09e-78a3-467b-b880-ba55
 curl "http://localhost:8091/queues/orders/messages/next?consumer_id=worker-1&timeout=5"
 
 # Reject dengan requeue (ganti {MESSAGE_ID})
-curl -X POST http://localhost:8091/queues/messages/{MESSAGE_ID}/reject \
+curl -X POST http://localhost:8091/queues/messages/28950866-b1e6-4d89-8f46-7cc928f8ab16/reject \
   -H "Content-Type: application/json" \
   -d '{"consumer_id":"worker-1","requeue":true}'
 

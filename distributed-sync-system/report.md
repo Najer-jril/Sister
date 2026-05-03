@@ -1,8 +1,8 @@
 # Laporan Tugas 2 - Sistem Parallel dan Terdistribusi
 ## Implementasi Distributed Synchronization System
 
-**Nama:** [NAMA]
-**NIM:** [NIM]
+**Nama:** Muhammad Nazril Ilham
+**NIM:** 11230159
 **Mata Kuliah:** Sistem Parallel dan Terdistribusi
 **Deadline:** 3 Mei 2026
 
@@ -111,26 +111,12 @@ Replikasi log berlangsung ketika sebuah aksi perubahan status masuk. Modifikasi 
 #### 3.1.2 Implementasi
 Implementasi pada klaster `Lock` bertumpu di port `8001` hingga `8003`. Variabel Enum diinstansiasi menjadi kontrol status (*FOLLOWER, CANDIDATE, LEADER*), di-back up penumpukan nilai di Redis sebagai persistent state. *Timeout* pemilihan didesain acak (150–300 ms), di mana letupan pesan sinkronisasi detak jantung (*heartbeat*) berjalan konsisten setiap 50 ms. Semua komando berinteraksi mandiri ke antar-node via URI presisi spesifik `http://lockX:800X/message`. Pabila simpul *Leader* mencium bukti ia tak lagi menggenggam mandat mayoritas, algoritmanya segera memerintahkan prosedur penghentian dominasi (*step down*) guna mematuhi simpul penguasa port *term* yang lebih tinggi.
 
-#### 3.1.3 Hasil
-[SCREENSHOT_RAFT_LEADER]
-[SCREENSHOT_RAFT_FOLLOWERS]
-[SCREENSHOT_FAILOVER]
-[SCREENSHOT_REJOIN]
-
 ### 3.2 Distributed Lock Manager
 #### 3.2.1 Penjelasan
 Manajer penguncian bertugas mengalokasi eksklusivitas atau sekuriti pembagian akses. Implementasi *EXCLUSIVE* mengunci modifikasi atau bacaan spesifik per *holder_id*, adapun *SHARED* mengizinkan antrean komputasi baca tanpa batas kuota selama tiada status eksklusif tersisa. Fasilitas mitigasi konflik turut diintegrasikan menggunakan metode runut penelusuran alur mendalam (*wait-for graph DFS - Depth-First Search*) bagi mendeteksi sirkulasi bundar alias *deadlock*, ditambah pelebangan masa tenggat (*expiry lifetime*) demi me-release sewa tanpa pengawasan yang telantar secara paksa.
 
 #### 3.2.2 Implementasi
 Prosedur pengelolaan penguncian berbasis Python `LockManager` didirikan membungkus *superclass* `RaftNode`. Operasi dominan mencakup komputasi spesifik (*acquire_lock, release_lock, try_lock*). Mesin ini memanfaatkan metode komprehensif *detect_deadlock* melacak siklus sirkular. Sinkronisasi periodik penyapuan lock basi dikelola mandiri via fungsi asinkron kontinu *_expire_locks* dengan jeda dua detik, sedangkan mutasi data persisten pengisian log wajib terlebih dahulu diverifikasi setujunya oleh Raft Quorum sebelum sinyal balik diberikan ke pihak klien asal pemanggil instruksi.
-
-#### 3.2.3 Hasil
-[SCREENSHOT_ACQUIRE_EXCLUSIVE]
-[SCREENSHOT_CONFLICT_409]
-[SCREENSHOT_503_NON_LEADER]
-[SCREENSHOT_LOCK_STATUS]
-[SCREENSHOT_DEADLOCKS]
-[SCREENSHOT_RELEASE]
 
 ### 3.3 Distributed Queue System
 #### 3.3.1 Penjelasan
@@ -139,13 +125,6 @@ Antrean logis terdistribusi menggunakan mekanisme *Consistent Hashing Ring* demi
 #### 3.3.2 Implementasi
 Arsitektur klaster implementasi pada port TCP `8091`-`8093` yang berlabel model `QueueNode` menjaring algoritma partisi `ConsistentHashRing`. Proses eksekusinya meliputi *produce*, *consume*, *ack*, dan *reject*. Proses pendelegasian status per pesan (*inflight tracking*) direkam spesifik melalui Redis. Tiap kali *backend server boot-up* (*_recover_in_flight*), sistem langsung mereset seluruh eksekusi tak selesai melaui rotasi skrip *ack_timeout_loop* dalam kisaran validasi periodik tiga puluh detik.
 
-#### 3.3.3 Hasil
-[SCREENSHOT_PRODUCE]
-[SCREENSHOT_CONSUME]
-[SCREENSHOT_ACK]
-[SCREENSHOT_REJECT_REQUEUE]
-[SCREENSHOT_QUEUE_STATS]
-
 ### 3.4 Distributed Cache — MESI Protocol
 #### 3.4.1 Penjelasan MESI
 Replikasi data cache wajib dijamin sinkron pada node-node ganda di skenario terdistribusi. Protokol mitigatif mesin multi-prosesor *MESI* diaktifkan berlandaskan perputaran wujud modifikasi (*Modified*), penyertaan eksklusif (*Exclusive*), disebarluaskan beramai-ramai (*Shared*), maupun ketetapan keabsahan usang (*Invalid*). Transisi-transisi antarafase menjamin bahwasanya tiada dua memori logis memuat variabel parameter beda saat dibaca bersamaan demi melestarikan relasi konsistensi penuh koherensi peredaran modifikasi.
@@ -153,23 +132,12 @@ Replikasi data cache wajib dijamin sinkron pada node-node ganda di skenario terd
 #### 3.4.2 Implementasi
 Kapasitas memori virtual maksimal (`LRUCache`) diisi batas seribu tumpuk entri berlokasi pada `CacheNode`. Skema direktori menunjuk port tunggal TCP primer pangkalan simpul lokal *cache1* port `8101` berlaku layaknya instansi kendali koherensi alias *DirectoryController*. Pemanggilan penginstruksian penulisan hingga invalidasi dihubungkan via integrasi tunggu interupsi tanggap (*asyncio.Event*), yang selanjutnya disetir ulang menggunakan sirkuit rute tertutup privat spesifik (seperti */internal/invalidate*, */internal/invalidate_ack*, dan */internal/fetch*).
 
-#### 3.4.3 Hasil
-[SCREENSHOT_CACHE_WRITE]
-[SCREENSHOT_CACHE_HIT]
-[SCREENSHOT_CACHE_MISS]
-[SCREENSHOT_COHERENCE_STATE]
-[SCREENSHOT_CACHE_METRICS]
-
 ### 3.5 Containerization
 #### 3.5.1 Struktur Docker
 Pendekatan kontainer mandiri secara mendetail dipilah menuruti komponen sub-sistem. Ini mempresentasikan format instruksional instalasi tiga arsip file Docker yaitu `Dockerfile.lock`, `Dockerfile.queue`, dan `Dockerfile.cache`, tiap entitas dirancang membawa `ENTRYPOINT` argumen tipe injeksi pra-kompilasi. Blok kode arsitektur di orkestra *docker-compose.yml* merangkum belasan servis murni mengawinkan keterikatan urutan sekuensial inisiasi dengan prasyarat penyeleksian status stabil *service_healthy* pada port bridge virtual terdedikasi `distributed_net`.
 
 #### 3.5.2 Scaling
 Menambah titik penyambungan simpul klaster hanyalah mereplikasi baris instansi YAML penamaan yang spesifik. Seumpama *Lock4* baru hendak diintegrasikan, pembuat aplikasi sekadar mengkopi rancangan struktur dari *Lock3*, memperbarui nomor indeks nama servisnya sekaligus menautkan angka ekspos port eksternal TCP dan melampirkan label peernya pada inisiasi baris variabel parameter lingkung cluster.
-
-#### 3.5.3 Hasil
-[SCREENSHOT_DOCKER_PS]
-[SCREENSHOT_ORBSTACK]
 
 ---
 
@@ -181,10 +149,6 @@ Unit pengepul laporan mesin pengamat *Prometheus* beroperasi statis dalam mengel
 ### 4.2 Grafana
 Representasi visual grafis kompilasi rekap parameter tersebut akhirnya divisualkan via penautan otentik panel sumber data lokal Prometheus memampang instrumen pengukur detail utilitas metrik.
 
-### 4.3 Hasil
-[SCREENSHOT_PROMETHEUS_TARGETS]
-[SCREENSHOT_GRAFANA]
-
 ---
 
 ## 5. Pengujian
@@ -195,10 +159,6 @@ Rangkaian pengetesan subrutin skrip unit *unit testing* Python mengisolasi total
 
 ### 5.2 Load Testing
 Simulasi pelayangan penekanan beban agregat ekstrem menugaskan instrumen modul generator stres Locust dari basis file perantara `load_test_scenarios.py`. Spesifik beban porsi simulasi bervariasi ditugaskan untuk pengguna *LockManagerUser* memborbardir sepuluh koneksi per detik, sedangkan unit *QueueUser* mendesak serbuan pesanan sampai kuota lima puluh baris teks memadat di antrean, diikuti pengulas pengguna utilitas *CacheUser* berpersentase frekuensi acak baca/tulis delapan puluh-dua puluh bagian.
-
-### 5.3 Hasil
-[SCREENSHOT_PYTEST]
-[SCREENSHOT_LOCUST]
 
 | Operasi | Throughput | Avg Latency | P99 Latency | Error Rate |
 |---|---|---|---|---|
@@ -235,28 +195,14 @@ Rencana penskalaan *scaling out* struktur terdistribusi untuk penguncian eksklus
 
 ---
 
-## 7. Tantangan dan Solusi
+## 7. Kesimpulan
 
-Perjuangan pematangan perangkat lunak terdistribusi menuntut manuver investigasi mendalam terhadap beraneka spektrum disrupsi sinkronisasi teknis rumit. Pertama, kami terbentur pada misteri peniadaan rute pelengkap ujung lokasi identifikasi URL alamat tujuan anggota kelompok *Raft peer url* di mana akhiran label */message* luput dari penyisipan susunan string koneksi *__main__.py*. Kekeliruan ini memercikkan kekacauan putaran pengembalian parameter eror penolakan tipe HTTP *404*, yang perlahan berevolusi menunggangi fase ekskalasi ledakan badai periode *election storm* hingga mencatatkan angka terminologi periode ke 1400 secara kilat tak terkendali. Strategi mengobati anomali ini cukup lempeng, yakni mengamputir variabel pautan dengan menyempilkan perbaikan susunan konkatensi ekstensi mutlak `/message` di urutan muara rujukan silsilah *peer_urls*.
-
-Masalah fatal keaslian semantik format pemindaian penyimpanan struktur peredaran pangkalan antrean terungkap ketika iterasi pelingkaran perulangan eksekusi menavigasi nilai parameter kurungan pergerakan basis Redis Scan mengalami eror tak terduga (*cursor bug*). Hal ini murni dilahirkan komplikasi beda takaran penunjukan entitas saat nilai string literal nol `"0"` dipasangkan ke siklus `while` berkondisi angka murni nol non string, yang merugikan kestabilan perulangan dengan mencipta putaran abadi alias *infinite loop*. Mengakalinya secara efektif memerlukan langkah penyepadanan tipedata pengujian penentu ke sosok string literal pemadan ekuivalen semisal `cursor != "0"` bersusul baris pengondisian penyela terminasi aman alias instruksi skrip `break`.
-
-Konfigurasi kompilasi penyeleksian vitalitas internal pangkalan Docker (alias *Docker healthcheck*) turut mengulurkan teka-teki memusingkan sesaat pasca arsitektur ditugaskan terbangun otomatis. Parameter penentuan margin awal masa toleransi pendirian kontainer terlampau ringkas aslinya mengakibatkan mesin pemeriksa menyimpulkan status sakit kritis yang salah arah kepada serangkaian modul kontainer jauh sebelum pustaka skrip utama internal usai rampung merekatkan integrasi port HTTP secara holistik. Penyembuhannya dipasang parameter pemanjangan kelonggaran interval ke nilai konversi detak peninjauan `start_period: 15s` sembari menggeser angka batas perbaikan perulangan tes deteksi ke kuantitas per-lima tes `retries: 5`.
-
-Eksperimen logis penyertaan modul penangkapan visual analisis perikatan matrik juga mengalami aral kepincangan mendengkelkan akal tatkala Docker merangkai paksa instalasi volume alamat file *prometheus.yml* membelok dari kewajaran berujud entitas direktori, alih-alih berkas dokumen. Kepelikan hal terdebut didalangi sifat adaptif kelalaian di mana dokumen fisik bersangkutan memang absens atau masih urung dibuat sebelum manuver instruksional formasi jajaran penempa *docker-compose up* dijalankan pertamakali. Solusinya tersingkap melalu penerapan penanaman kreasi cetak format dokumentasi YAML sejuk sebelum rotasi pengangkatan keseluruhan kompilasi gubah kerangka terkomposisi diletupkan penuh di area pangkalan terminal awal.
-
-Pertimbangan spesifik dalam pencabangan taksonomi arsitektural aslinya dibangun membonceng satu instalasi kontainer utama alias berkas `Dockerfile.node` melayani generalisasi penanaman jenis klaster terintegrasi secara modular generalistik dari sisi efisiensi konfigurasi basis ruang instalasi. Tapi, konsep homogenistik minimalisasi pemeliharaan tunggal ini dirasa kerasan membengkok menapaki rute ketentuan tuntutan pedoman akademik spesifik penuangan kriteria peruntukan keragaman unik berkas peluncur tiap aplikasi. Resolusinya terealisasi lekas melewati penduplikasian percabangan skema instruksional kontainer ke format trikopia file murni, meliputi file spesifik `Dockerfile.lock`, `Dockerfile.queue`, sekaligus pendamping `Dockerfile.cache` yang menjejalkan inisial eksklusif modifikasi argumen khusus variabel awalan operasional pra modifikasi ENTRYPOINT parameter tiap penggerak identifikasi layanan bertalian.
-
----
-
-## 8. Kesimpulan
-
-### 8.1 Kesimpulan
+### 7.1 Kesimpulan
 Seluruh arsitektur terdisitribusi yang dikurasi ke tatanan modul fungsionalis berbasis *Python Asyncio* ini mantap mendemonstrasikan kelancaran dan ketepatan asimilasi koherensi fungsional secara apik terkompartmentasi ke ranah klaster Lock, Queue, maupun lini komputasi transaksional klaster layanan Cache merentang utuh tanpa jeda di ranah orkestrasi 12 unit *docker container*. Pemusatan riset berlandaskan instrumen fondasi protokol *Consensus Raft*, pemerataan skema *Consistent Hashing*, beserta kepatuhan model rotasi invalidasi sekuensial hierarki cache *MESI Protocol* menghantarkan sekelumit wawasan fundamental pemahaman mendalam atas sinkronisasi pendelegasian sumber beban pemrosesan skala luas. Modus eksekusinya selaras membuktikan interkoneksivitas tangguh mengantisipasi kemelut inkonsistensi asinkron di masa puncak serbuan pertukaran rute operasi sistematis bersama. 
 
 Pelajaran yang amat substansial berhasil diekstrak melalui proses debug menyingkap bahwa interaksi sekumpulan kode non monolitik teramat rentan menderita masalah anomali laten dari detail sebatang kecil sememat port jaringan string dan silang referensi parsial angka sinkron nilai perlintasan logika perulangan per kursor antrean terdistribusi.
 
-### 8.2 Saran
+### 7.2 Saran
 Meskipun proyek dasar prototip sinkronisasi multi subsistem terdistribusi inisal rampung sesuai kualifikasi akademik penugasan fondasi mumpuni, serangkaian fitur peningkat sekresi kestabilan masa mendatang amat sangat leluasa ditambahkan menopang fungsionalisasi ke skala pemakaian pabrikan solid kelas *enterprise*. Pertimbangan modifikasi ke modifikasi format persetujuan perlindungan fungsional sekelas perlindungan delegatif ke serangan asimetri cacat unit *Byzantine (PBFT)*, distribusi pembagian area topologi peladen tersegregasi geografis mandiri multi ketersediaan *geo-distribution*, perwujudan intelegensi analitik buatan pelerai pengantre pelimpahan rasio trafis seimbang berbasis otomatisasi cerdik presisi *ML Load Balancing*, seiring kepatutan integrasi kemanan pembungkusan lalulintas lapisan pengacakan sandi transportasi kriptografi solid memadai bersekuriti kuat presisi sejenis konektivitas gembok tertenung *TLS Encryption*.
 
 ---
