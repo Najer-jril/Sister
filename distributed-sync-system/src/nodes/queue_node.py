@@ -219,25 +219,32 @@ class QueueNode(BaseNode):
                 return Message.from_dict(res)
             # If primary peer fails or times out, try secondary or fallback local
 
-        # Determine responsible or fallback locally
-        result = await self.redis.brpop([f"queue:{queue_name}"], timeout=timeout)
-        if not result:
-            return None
+        # [FIX] Loop untuk skip dead-letter messages otomatis
+        while True:
+            result = await self.redis.brpop([f"queue:{queue_name}"], timeout=timeout)
+            if not result:
+                return None
 
-        _, raw_msg = result
-        msg = Message.from_dict(json.loads(raw_msg))
-        
-        msg.delivery_count += 1
-        msg.status = MessageStatus.DELIVERED
-        
-        inflight_data = {
-            "message": msg.to_dict(),
-            "consumer_id": consumer_id,
-            "fetched_at": time.time()
-        }
-        await self.redis.hset(f"inflight:{queue_name}", msg.message_id, json.dumps(inflight_data))
-        
-        return msg
+            _, raw_msg = result
+            msg = Message.from_dict(json.loads(raw_msg))
+            
+            # [FIX] Kalau batas maksimal retry sudah habis, lempar ke DLQ dan ambil message selanjutnya
+            if msg.is_dead_letter():
+                msg.status = MessageStatus.DEAD
+                await self.redis.rpush(f"dlq:{queue_name}", json.dumps(msg.to_dict()))
+                continue
+            
+            msg.delivery_count += 1
+            msg.status = MessageStatus.DELIVERED
+            
+            inflight_data = {
+                "message": msg.to_dict(),
+                "consumer_id": consumer_id,
+                "fetched_at": time.time()
+            }
+            await self.redis.hset(f"inflight:{queue_name}", msg.message_id, json.dumps(inflight_data))
+            
+            return msg
 
     async def acknowledge(self, message_id: str, consumer_id: str) -> bool:
         """Acknowledges successful processing of a message."""
@@ -311,7 +318,7 @@ class QueueNode(BaseNode):
 
     async def _recover_in_flight(self) -> None:
         """Re-queues messages that were stuck in-flight (e.g. from a node crash)."""
-        cursor = "0"
+        cursor = 0
         recovered = 0
         while True:
             cursor, keys = await self.redis.scan(cursor=cursor, match="inflight:*", count=100)
@@ -321,13 +328,23 @@ class QueueNode(BaseNode):
                 for msg_id, raw_data in fields.items():
                     data = json.loads(raw_data)
                     msg = Message.from_dict(data["message"])
-                    msg.status = MessageStatus.PENDING
-                    await self.redis.rpush(f"queue:{queue_name}", json.dumps(msg.to_dict()))
+                    
                     await self.redis.hdel(inflight_key, msg_id)
+
+                    # [FIX] Cegah zombie message balik ke antrean saat server restart
+                    if msg.is_dead_letter():
+                        msg.status = MessageStatus.DEAD
+                        await self.redis.rpush(f"dlq:{queue_name}", json.dumps(msg.to_dict()))
+                    else:
+                        msg.status = MessageStatus.PENDING
+                        await self.redis.rpush(f"queue:{queue_name}", json.dumps(msg.to_dict()))
                     recovered += 1
+            if cursor == 0:
+                break
         
         if recovered > 0:
             logger.info(f"Node {self.node_id} recovered {recovered} in-flight messages on startup.")
+
 
     async def _process_ack_timeouts(self) -> None:
         """Scans in-flight hashes for timed-out messages."""
@@ -410,11 +427,22 @@ class QueueNode(BaseNode):
         data = await request.json()
         consumer_id = data.get("consumer_id", "")
         
+        is_forwarded = request.query.get("forwarded") == "1"
+        
+        # Coba acknowledge di node ini dulu
         success = await self.acknowledge(message_id, consumer_id)
         if success:
             return web.json_response({"status": "acknowledged"}, status=200)
-        else:
-            return web.json_response({"error": "Message not found in-flight"}, status=404)
+            
+        # [FIX] Kalau gagal, cari message-nya ke node lain
+        if not is_forwarded:
+            for peer_url in self.peers.values():
+                url = f"{peer_url}/queues/messages/{message_id}/ack?forwarded=1"
+                res = await self._forward_request('POST', url, json=data)
+                if res and res.get("status") == "acknowledged":
+                    return web.json_response({"status": "acknowledged"}, status=200)
+                    
+        return web.json_response({"error": "Message not found in-flight"}, status=404)
 
     async def api_reject(self, request: web.Request) -> web.Response:
         """POST /queues/messages/{message_id}/reject"""
@@ -423,11 +451,22 @@ class QueueNode(BaseNode):
         consumer_id = data.get("consumer_id", "")
         requeue = data.get("requeue", True)
         
+        is_forwarded = request.query.get("forwarded") == "1"
+        
+        # Coba reject di node ini dulu
         success = await self.reject(message_id, consumer_id, requeue)
         if success:
             return web.json_response({"status": "rejected"}, status=200)
-        else:
-            return web.json_response({"error": "Message not found in-flight"}, status=404)
+            
+        # [FIX] Kalau gagal, cari message-nya ke node lain
+        if not is_forwarded:
+            for peer_url in self.peers.values():
+                url = f"{peer_url}/queues/messages/{message_id}/reject?forwarded=1"
+                res = await self._forward_request('POST', url, json=data)
+                if res and res.get("status") == "rejected":
+                    return web.json_response({"status": "rejected"}, status=200)
+                    
+        return web.json_response({"error": "Message not found in-flight"}, status=404)
 
     async def api_stats(self, request: web.Request) -> web.Response:
         """GET /queues/{queue_name}/stats"""

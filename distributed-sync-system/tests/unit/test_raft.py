@@ -3,6 +3,17 @@ import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 from src.consensus.raft import RaftNode, Role
 
+# [FIX] Perbaikan typo "from" dan "prometheus"
+from prometheus_client import REGISTRY
+
+@pytest.fixture(autouse=True)
+def clear_prometheus_registry():
+    """Membersihkan registry Prometheus sebelum setiap test berjalan agar tidak bentrok."""
+    collectors = list(REGISTRY._collector_to_names.keys())
+    for collector in collectors:
+        REGISTRY.unregister(collector)
+
+# [FIX] Jangan lupa @pytest.fixture di sini!
 @pytest.fixture
 def raft_node():
     node = RaftNode("node1", "localhost", 8001, ["http://node2", "http://node3"], "redis://fake")

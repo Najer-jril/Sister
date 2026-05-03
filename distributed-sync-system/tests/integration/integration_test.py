@@ -6,6 +6,7 @@ import uuid
 # Replace with actual reachable ports if doing live test
 NODE1_URL = "http://127.0.0.1:8001"
 NODE2_URL = "http://127.0.0.1:8002"
+NODE3_URL = "http://127.0.0.1:8003"
 
 @pytest.mark.integration
 @pytest.mark.asyncio

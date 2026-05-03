@@ -157,67 +157,73 @@ class DirectoryController:
 
 class CacheNode(BaseNode):
     """
-    Distributed Cache node using MESI protocol.
+    Distributed Cache node using MESI-like Snooping via Redis Pub/Sub.
     """
     def __init__(self, node_id: str, host: str, port: int, redis_url: str, directory_url: str, is_directory: bool = False, peers: Dict[str, str] = None) -> None:
         super().__init__(node_id, host, port, heartbeat_interval=10.0)
         self.redis_url = redis_url
         self.directory_url = directory_url
         self.is_directory = is_directory
-        self.peers = peers or {}  # Maps node_id to url
+        self.peers = peers or {} 
         
         self.redis: Optional[Redis] = None
         self.cache = LRUCache(capacity=1000)
         self.directory_ctrl = DirectoryController() if is_directory else None
         
-        self.invalidation_events: Dict[str, asyncio.Event] = {}
-        self.expected_acks: Dict[str, int] = {}
         self.invalidations_received = 0
-        
         self.total_read_latency = 0.0
         self.total_reads = 0
+        self._bus_task: Optional[asyncio.Task] = None
 
-        # REST API Routes
+        # REST API Routes - Pastikan rute statis di atas rute dinamis {key}
+        self._app.router.add_get('/cache/metrics', self.api_metrics)
+        self._app.router.add_get('/cache/coherence-state', self.api_coherence)
         self._app.router.add_get('/cache/{key}', self.api_get)
         self._app.router.add_put('/cache/{key}', self.api_put)
         self._app.router.add_delete('/cache/{key}', self.api_delete)
-        self._app.router.add_get('/cache/metrics', self.api_metrics)
-        self._app.router.add_get('/cache/coherence-state', self.api_coherence)
         
-        # Internal MESI Routes
+        # Internal HTTP Routes (Fallback, tapi sekarang kita utamakan Redis Bus)
         self._app.router.add_post('/internal/invalidate', self.internal_invalidate)
-        self._app.router.add_post('/internal/invalidate_ack', self.internal_invalidate_ack)
         self._app.router.add_post('/internal/downgrade', self.internal_downgrade)
         self._app.router.add_get('/internal/fetch/{key}', self.internal_fetch)
-        
-        # Internal Directory Routes (if this node is acting as directory)
-        if self.is_directory:
-            self._app.router.add_post('/dir/read', self.dir_read)
-            self._app.router.add_post('/dir/write', self.dir_write)
 
     async def start(self) -> None:
         self.redis = Redis.from_url(self.redis_url, decode_responses=True)
         await super().start()
-        logger.info(f"CacheNode {self.node_id} started. Is Directory: {self.is_directory}")
+        
+        # [FIX FINAL] Jalankan pendengar Bus Sinkronisasi via Redis
+        self._bus_task = asyncio.create_task(self._redis_bus_listener())
+        logger.info(f"CacheNode {self.node_id} started with Redis Pub/Sub Bus.")
 
     async def stop(self) -> None:
+        if self._bus_task:
+            self._bus_task.cancel()
         if self.redis:
             await self.redis.close()
         await super().stop()
 
+    async def _redis_bus_listener(self) -> None:
+        """Mendengarkan broadcast invalidation dari node lain via Redis (Bus Snooping)."""
+        try:
+            pubsub = self.redis.pubsub()
+            await pubsub.subscribe("mesi_snooping_bus")
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    data = json.loads(message["data"])
+                    # Jika ada instruksi INVALIDATE dari node LAIN
+                    if data.get("action") == "INVALIDATE" and data.get("sender") != self.node_id:
+                        key = data["key"]
+                        line = self.cache.cache.get(key)
+                        if line:
+                            line.state = CacheLineState.INVALID
+                        self.invalidations_received += 1
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Redis Bus listener error: {e}")
+
     async def process_message(self, message: Any) -> None:
         pass
-
-    async def _forward(self, method: str, url: str, **kwargs) -> Any:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request(method, url, **kwargs) as response:
-                    if response.status >= 400:
-                        return None
-                    return await response.json()
-        except Exception as e:
-            logger.error(f"Failed to forward {method} to {url}", exc_info=e)
-            return None
 
     async def _read_from_redis(self, key: str) -> Optional[str]:
         return await self.redis.get(f"cache:{key}")
@@ -228,51 +234,21 @@ class CacheNode(BaseNode):
     # --- Core Cache Operations ---
 
     async def read(self, key: str) -> Dict[str, Any]:
-        """Reads a value from the cache, coordinating with the directory if necessary."""
         start_time = time.time()
         line = self.cache.get(key)
         
+        # Kalau ada di local cache dan TIDAK INVALID
         if line and line.state != CacheLineState.INVALID:
             latency = time.time() - start_time
             self.total_reads += 1
             self.total_read_latency += latency
             return {"value": line.value, "cache_hit": True}
 
-        # Miss or Invalid - contact directory
-        req_data = {"key": key, "node_id": self.node_id}
-        dir_res = await self._forward('POST', f"{self.directory_url}/dir/read", json=req_data)
+        # Kalau MISS atau INVALID, ambil dari Redis
+        value = await self._read_from_redis(key)
         
-        value = None
-        new_state = CacheLineState.SHARED
-        
-        if not dir_res:
-            # Fallback to direct DB read if directory is dead
-            value = await self._read_from_redis(key)
-            new_state = CacheLineState.EXCLUSIVE
-        else:
-            action = dir_res["action"]
-            state_str = dir_res["state"]
-            new_state = CacheLineState[state_str]
-            
-            if action == "FETCH_FROM_DB":
-                value = await self._read_from_redis(key)
-            elif action == "FETCH_FROM_NODE" or action == "DOWNGRADE_AND_FETCH":
-                target_node = dir_res.get("node_id")
-                if target_node and target_node in self.peers:
-                    t_url = self.peers[target_node]
-                    if action == "DOWNGRADE_AND_FETCH":
-                        await self._forward('POST', f"{t_url}/internal/downgrade", json={"key": key})
-                    
-                    fetch_res = await self._forward('GET', f"{t_url}/internal/fetch/{key}")
-                    if fetch_res and "value" in fetch_res:
-                        value = fetch_res["value"]
-                    else:
-                        value = await self._read_from_redis(key) # fallback
-                else:
-                    value = await self._read_from_redis(key)
-
         if value is not None:
-            new_line = CacheLine(key=key, value=value, state=new_state, node_id=self.node_id, size_bytes=sys.getsizeof(value))
+            new_line = CacheLine(key=key, value=value, state=CacheLineState.EXCLUSIVE, node_id=self.node_id, size_bytes=sys.getsizeof(value))
             evicted = self.cache.put(key, new_line)
             if evicted and evicted.state == CacheLineState.MODIFIED:
                 await self.flush(evicted.key, evicted)
@@ -283,110 +259,56 @@ class CacheNode(BaseNode):
         return {"value": value, "cache_hit": False}
 
     async def write(self, key: str, value: str) -> bool:
-        """Writes a value to the cache and invalidates other sharers."""
-        line = self.cache.cache.get(key)  # Direct access to avoid updating access stats just yet
+        """Menulis data dan langsung teriak ke Redis Bus agar semua node lain menghapus cachenya."""
         
-        if line and line.state in (CacheLineState.MODIFIED, CacheLineState.EXCLUSIVE):
-            # Silent upgrade to MODIFIED if EXCLUSIVE, or just update if MODIFIED
+        # 1. Update ke Redis utama duluan
+        await self._write_to_redis(key, value)
+
+        # 2. Update local cache
+        line = self.cache.cache.get(key)
+        if line:
             line.value = value
             line.state = CacheLineState.MODIFIED
             line.last_accessed = time.time()
             line.access_count += 1
-            self.cache.cache[key] = line # move to end indirectly or keep order
             self.cache.cache.move_to_end(key)
-            await self._write_to_redis(key, value)
-            return True
-
-        # Need directory coordination
-        req_data = {"key": key, "node_id": self.node_id}
-        dir_res = await self._forward('POST', f"{self.directory_url}/dir/write", json=req_data)
-        
-        if dir_res and dir_res.get("action") == "INVALIDATE":
-            sharers = dir_res.get("sharers", [])
-            if sharers:
-                await self._broadcast_invalidate_and_wait(key, sharers)
-
-        # Update local
-        new_line = CacheLine(key=key, value=value, state=CacheLineState.MODIFIED, node_id=self.node_id, size_bytes=sys.getsizeof(value))
-        evicted = self.cache.put(key, new_line)
-        if evicted and evicted.state == CacheLineState.MODIFIED and evicted.key != key:
-            await self.flush(evicted.key, evicted)
-            
-        await self._write_to_redis(key, value)
-        return True
-
-    async def _broadcast_invalidate_and_wait(self, key: str, sharers: List[str]) -> None:
-        """Sends INVALIDATE to all sharers and waits for ACKs."""
-        event = asyncio.Event()
-        self.invalidation_events[key] = event
-        self.expected_acks[key] = len(sharers)
-        
-        tasks = []
-        for s_id in sharers:
-            if s_id in self.peers:
-                url = f"{self.peers[s_id]}/internal/invalidate"
-                tasks.append(self._forward('POST', url, json={"key": key, "requester": self.node_id}))
+        else:
+            new_line = CacheLine(key=key, value=value, state=CacheLineState.MODIFIED, node_id=self.node_id, size_bytes=sys.getsizeof(value))
+            evicted = self.cache.put(key, new_line)
+            if evicted and evicted.state == CacheLineState.MODIFIED and evicted.key != key:
+                await self.flush(evicted.key, evicted)
                 
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # 3. [FIX FINAL] Broadcast pesan INVALIDATE lewat Redis Pub/Sub
+        msg = json.dumps({
+            "action": "INVALIDATE",
+            "key": key,
+            "sender": self.node_id
+        })
+        await self.redis.publish("mesi_snooping_bus", msg)
         
-        # Wait for all ACKs or timeout
-        try:
-            await asyncio.wait_for(event.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            logger.warning(f"Timeout waiting for invalidation ACKs for key {key}")
-        finally:
-            self.invalidation_events.pop(key, None)
-            self.expected_acks.pop(key, None)
-
-    async def invalidate(self, key: str) -> bool:
-        """Processes an incoming INVALIDATE request."""
-        line = self.cache.cache.get(key)
-        if line:
-            line.state = CacheLineState.INVALID
-        self.invalidations_received += 1
         return True
 
     async def flush(self, key: str, line: Optional[CacheLine] = None) -> bool:
-        """Writes a dirty line back to storage and downgrades to INVALID."""
         if not line:
             line = self.cache.cache.get(key)
-            
         if line and line.state == CacheLineState.MODIFIED:
             await self._write_to_redis(key, line.value)
             line.state = CacheLineState.INVALID
             return True
         return False
 
-    # --- Internal MESI API Handlers ---
+    # --- Internal MESI API Handlers (Fallback) ---
 
     async def internal_invalidate(self, request: web.Request) -> web.Response:
         data = await request.json()
         key = data["key"]
-        requester = data["requester"]
-        
-        await self.invalidate(key)
-        
-        # Send ACK back to requester
-        if requester in self.peers:
-            ack_url = f"{self.peers[requester]}/internal/invalidate_ack"
-            asyncio.create_task(self._forward('POST', ack_url, json={"key": key, "node_id": self.node_id}))
-            
-        return web.json_response({"status": "ok"})
-
-    async def internal_invalidate_ack(self, request: web.Request) -> web.Response:
-        data = await request.json()
-        key = data["key"]
-        
-        if key in self.expected_acks:
-            self.expected_acks[key] -= 1
-            if self.expected_acks[key] <= 0:
-                if key in self.invalidation_events:
-                    self.invalidation_events[key].set()
-                    
+        line = self.cache.cache.get(key)
+        if line:
+            line.state = CacheLineState.INVALID
+        self.invalidations_received += 1
         return web.json_response({"status": "ok"})
 
     async def internal_downgrade(self, request: web.Request) -> web.Response:
-        """Forces a MODIFIED line to write back and become SHARED."""
         data = await request.json()
         key = data["key"]
         line = self.cache.cache.get(key)
@@ -396,25 +318,11 @@ class CacheNode(BaseNode):
         return web.json_response({"status": "ok"})
 
     async def internal_fetch(self, request: web.Request) -> web.Response:
-        """Serves a read request from another node."""
         key = request.match_info['key']
         line = self.cache.cache.get(key)
         if line and line.state != CacheLineState.INVALID:
             return web.json_response({"value": line.value})
         return web.json_response({"error": "Not found or invalid"}, status=404)
-
-    # --- Directory Handlers (Active if is_directory=True) ---
-
-    async def dir_read(self, request: web.Request) -> web.Response:
-        data = await request.json()
-        result = self.directory_ctrl.handle_read(data["key"], data["node_id"])
-        return web.json_response(result)
-
-    async def dir_write(self, request: web.Request) -> web.Response:
-        data = await request.json()
-        result = self.directory_ctrl.handle_write(data["key"], data["node_id"])
-        return web.json_response(result)
-
 
     # --- Public REST API ---
 
@@ -438,16 +346,14 @@ class CacheNode(BaseNode):
     async def api_delete(self, request: web.Request) -> web.Response:
         key = request.match_info['key']
         await self.redis.delete(f"cache:{key}")
-        # Simplistic invalidate broadcast to clean caches
-        if self.is_directory:
-            sharers = self.directory_ctrl.directory.get(key, {}).get("sharers", set())
-            await self._broadcast_invalidate_and_wait(key, list(sharers))
+        # Broadcast delete lewat Redis Bus juga
+        msg = json.dumps({"action": "INVALIDATE", "key": key, "sender": self.node_id})
+        await self.redis.publish("mesi_snooping_bus", msg)
         return web.json_response({"status": "deleted"}, status=200)
 
     async def api_metrics(self, request: web.Request) -> web.Response:
         stats = self.cache.get_stats()
         avg_latency = (self.total_read_latency / self.total_reads) if self.total_reads > 0 else 0.0
-        
         stats.update({
             "node_id": self.node_id,
             "invalidations_received": self.invalidations_received,
@@ -456,10 +362,9 @@ class CacheNode(BaseNode):
         return web.json_response(stats)
 
     async def api_coherence(self, request: web.Request) -> web.Response:
-        """Debug endpoint showing all local cache states."""
         states = {k: v.to_dict() for k, v in self.cache.cache.items()}
         return web.json_response({
             "node_id": self.node_id,
-            "directory_state": self.directory_ctrl.directory if self.is_directory else "Not a directory",
+            "directory_state": "Snooping Bus Active",
             "local_lines": states
         })
