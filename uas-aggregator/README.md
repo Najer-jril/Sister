@@ -67,4 +67,4 @@ See `./report/report.md` for the report
 ## Lampiran
 
 link video youtube : https://youtu.be/zr6xEGfg7Kw
-link repo github : 
+link repo github : https://github.com/Najer-jril/Sister/tree/master/uas-aggregator
